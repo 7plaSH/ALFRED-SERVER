@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 void main() => runApp(const MyApp());
 
@@ -19,12 +21,89 @@ class MyApp extends StatelessWidget {
   }
 }
 
+// Класс для работы с API
+class MapApiService {
+  static const String baseUrl = 'http://localhost:3000';
+
+  static Future<List<MapMarker>> getMarkers() async {
+    final response = await http.get(Uri.parse('$baseUrl/markers'));
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => MapMarker.fromJson(json)).toList();
+    }
+    throw Exception('Failed to load markers');
+  }
+
+  static Future<MapMarker> addMarker(MapMarker marker) async {
+    String? imagePath;
+    if (marker.image != null) {
+      imagePath = await _uploadImage(marker.image!);
+    }
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/markers'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'lat': marker.position.latitude,
+        'lng': marker.position.longitude,
+        'note': marker.note,
+        'imagePath': imagePath,
+      }),
+    );
+
+    if (response.statusCode == 200) {
+      final responseData = json.decode(response.body);
+      return MapMarker.fromJson({
+        ...responseData,
+        'position': {
+          'lat': marker.position.latitude,
+          'lng': marker.position.longitude,
+        },
+        'note': marker.note,
+        'imagePath': imagePath,
+      });
+    }
+    throw Exception('Failed to add marker');
+  }
+
+  static Future<String?> _uploadImage(File image) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/upload'),
+    );
+    request.files.add(await http.MultipartFile.fromPath('file', image.path));
+
+    final response = await request.send();
+    if (response.statusCode == 200) {
+      final responseData = await response.stream.bytesToString();
+      return json.decode(responseData)['path'];
+    }
+    return null;
+  }
+
+  static Future<void> updateMarker(int id, bool isCompleted, String? comment) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/markers/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'isCompleted': isCompleted,
+        'comment': comment,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update marker');
+    }
+  }
+}
+
 class MapMarker {
   final LatLng position;
   final String note;
   final File? image;
-  final bool isCompleted; // false = красная (не выполнена), true = зеленая (выполнена)
+  final bool isCompleted;
   final String? comment;
+  final int? id;
 
   MapMarker({
     required this.position,
@@ -32,21 +111,40 @@ class MapMarker {
     this.image,
     this.isCompleted = false,
     this.comment,
+    this.id,
   });
 
+  factory MapMarker.fromJson(Map<String, dynamic> json) {
+    return MapMarker(
+      id: json['id'],
+      position: LatLng(
+        json['lat'] ?? json['position']['lat'],
+        json['lng'] ?? json['position']['lng'],
+      ),
+      note: json['note'],
+      image: json['image_path'] != null || json['imagePath'] != null 
+          ? File(json['image_path'] ?? json['imagePath']) 
+          : null,
+      isCompleted: json['is_completed'] == 1 || json['isCompleted'] == true,
+      comment: json['comment'],
+    );
+  }
+
   MapMarker copyWith({
-    String? note,
     LatLng? position,
+    String? note,
     File? image,
     bool? isCompleted,
     String? comment,
+    int? id,
   }) {
     return MapMarker(
-      note: note ?? this.note,
       position: position ?? this.position,
+      note: note ?? this.note,
       image: image ?? this.image,
       isCompleted: isCompleted ?? this.isCompleted,
       comment: comment ?? this.comment,
+      id: id ?? this.id,
     );
   }
 }
@@ -134,20 +232,35 @@ class CityMap extends StatefulWidget {
 
 class _CityMapState extends State<CityMap> {
   final MapController mapController = MapController();
-  final List<MapMarker> markers = [];
   final ImagePicker _picker = ImagePicker();
+  List<MapMarker> markers = [];
   bool isAddingMarker = false;
   File? _selectedImage;
-  List<MapMarker> visibleMarkers = []; // Видимые маркеры
-  bool showInfoButton = false;         // Показывать ли кнопку
+  List<MapMarker> visibleMarkers = [];
+  bool showInfoButton = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMarkers();
+    mapController.mapEventStream.listen((_) => _updateVisibleMarkers());
+  }
+
+  Future<void> _loadMarkers() async {
+    try {
+      final loadedMarkers = await MapApiService.getMarkers();
+      setState(() => markers = loadedMarkers);
+    } catch (e) {
+      print('Ошибка загрузки маркеров: $e');
+    }
+  }
 
   void _updateVisibleMarkers() {
-  final bounds = mapController.camera.visibleBounds; // Получаем границы видимой области
-  visibleMarkers = markers.where((marker) => bounds.contains(marker.position)).toList();
-
-  setState(() {
-    showInfoButton = visibleMarkers.isNotEmpty && visibleMarkers.isNotEmpty;
-  });
+    final bounds = mapController.camera.visibleBounds;
+    setState(() {
+      visibleMarkers = markers.where((marker) => bounds.contains(marker.position)).toList();
+      showInfoButton = visibleMarkers.isNotEmpty;
+    });
   }
 
   Future<void> _pickImage() async {
@@ -170,15 +283,23 @@ class _CityMapState extends State<CityMap> {
     final note = await _showNoteDialog(context);
     if (note == null || note.isEmpty) return;
 
-    setState(() {
-      markers.add(MapMarker(
+    try {
+      final newMarker = MapMarker(
         position: position,
         note: note,
         image: _selectedImage,
-      ));
-      isAddingMarker = false;
-      _selectedImage = null;
-    });
+      );
+      
+      final savedMarker = await MapApiService.addMarker(newMarker);
+      
+      setState(() {
+        markers.add(savedMarker);
+        isAddingMarker = false;
+        _selectedImage = null;
+      });
+    } catch (e) {
+      print('Ошибка сохранения маркера: $e');
+    }
   }
 
   Future<String?> _showNoteDialog(BuildContext context) async {
@@ -195,8 +316,8 @@ class _CityMapState extends State<CityMap> {
         title: Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: Color.fromARGB(255, 217, 217, 217), // Серый фон
-            borderRadius: BorderRadius.circular(4.0), // Закругленные углы
+            color: Color.fromARGB(255, 217, 217, 217),
+            borderRadius: BorderRadius.circular(4.0), 
           ),
           child: const Text(
             'Заявка',
@@ -466,8 +587,8 @@ class _CityMapState extends State<CityMap> {
         title: Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: Color.fromARGB(255, 217, 217, 217), // Серый фон
-            borderRadius: BorderRadius.circular(4.0), // Закругленные углы
+            color: Color.fromARGB(255, 217, 217, 217), 
+            borderRadius: BorderRadius.circular(4.0),
           ),
           child: Text(
             marker.isCompleted ? 'Заявка выполнена' : 'Заявка',
@@ -482,7 +603,7 @@ class _CityMapState extends State<CityMap> {
             constraints: BoxConstraints(
               minWidth: 400,
               maxWidth: 600,
-              maxHeight: MediaQuery.of(context).size.height * 0.7,
+              maxHeight: MediaQuery.of(context).size.height * 0.8,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -541,8 +662,8 @@ class _CityMapState extends State<CityMap> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(4),
                       side: BorderSide(
-                      color: Color.fromARGB(255, 102, 102, 102), // Цвет контура
-                      width: 1.0, // Толщина контура
+                      color: Color.fromARGB(255, 102, 102, 102), 
+                      width: 1.0, 
                     ),
                     ),
                   ),
@@ -571,8 +692,8 @@ class _CityMapState extends State<CityMap> {
         title: Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: Color.fromARGB(255, 217, 217, 217), // Серый фон
-            borderRadius: BorderRadius.circular(4.0), // Закругленные углы
+            color: Color.fromARGB(255, 217, 217, 217), 
+            borderRadius: BorderRadius.circular(4.0), 
           ),
           child: const Text(
             'Метки в зоне видимости',
@@ -712,7 +833,7 @@ class _CityMapState extends State<CityMap> {
           ),
           Positioned(
           right: 16,
-          bottom: 140, // Располагаем выше нижней панели
+          bottom: 140, 
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -768,11 +889,11 @@ class _CityMapState extends State<CityMap> {
           right: 0,
           bottom: 0,
           child: Container(
-            height: 100, // Высота панели
+            height: 100, 
             decoration: BoxDecoration(
-              color: const Color.fromARGB(255, 101, 98, 98), // Тёмно-серый цвет
-              borderRadius: const BorderRadius.vertical( // Закругление только сверху
-                top: Radius.circular(18.0), // Радиус закругления
+              color: const Color.fromARGB(255, 101, 98, 98), 
+              borderRadius: const BorderRadius.vertical( 
+                top: Radius.circular(18.0),
               ),
             ),
             child: Row(
@@ -827,8 +948,8 @@ class _CityMapState extends State<CityMap> {
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Color.fromARGB(255, 217, 217, 217),
-                        padding: EdgeInsets.zero, // Уменьшенные внутренние отступы
-                        minimumSize: const Size(58, 58), // Общий размер кнопки
+                        padding: EdgeInsets.zero, 
+                        minimumSize: const Size(58, 58), 
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         shape: const CircleBorder(),
                       ),
@@ -839,12 +960,12 @@ class _CityMapState extends State<CityMap> {
                         size: 56, // Размер иконки
                       ),
                     ),
-                    const SizedBox(height: 1), // Увеличенный отступ
+                    const SizedBox(height: 1), 
                     Text(
-                      isAddingMarker ? 'Отменить' : 'Добавить', // Динамический текст
+                      isAddingMarker ? 'Отменить' : 'Добавить', 
                       style: const TextStyle(
-                        color: Color.fromARGB(255, 201, 201, 201), // Белый текст для лучшей читаемости на темном фоне
-                        fontSize: 14, // Немного увеличенный размер
+                        color: Color.fromARGB(255, 201, 201, 201), 
+                        fontSize: 14, 
                       ),
                     ),
                   ],
