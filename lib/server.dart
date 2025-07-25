@@ -7,7 +7,7 @@ void main() async {
   final app = Alfred();
   final db = sqlite3.open('markers.db');
 
-  // Создание таблицы markers, если она не существует
+
   db.execute('''
     CREATE TABLE IF NOT EXISTS markers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,13 +26,13 @@ void main() async {
     )
   ''');
 
-  // Создаем директорию для загрузок, если её нет
+ 
   final uploadDir = Directory('uploads');
   if (!await uploadDir.exists()) {
     await uploadDir.create(recursive: true);
   }
 
-  // Включение CORS
+
   app.all('*', (req, res) {
     res.headers.add('Access-Control-Allow-Origin', '*');
     res.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -43,7 +43,7 @@ void main() async {
     }
   });
 
-  // Получение всех маркеров
+
   app.get('/markers', (req, res) {
     String? getHeaderValue(dynamic value) {
       if (value is List && value.isNotEmpty) {
@@ -81,7 +81,7 @@ void main() async {
     }).toList();
   });
 
-  // Добавление нового маркера
+
   app.post('/markers', (req, res) async {
     try {
       print('Received POST request to /markers');
@@ -139,7 +139,7 @@ void main() async {
     }
   });
 
-  // Обновление маркера
+
   app.put('/markers/:id', (req, res) async {
     final id = req.params['id'];
     final data = await req.bodyAsJsonMap;
@@ -159,7 +159,6 @@ void main() async {
     return {'status': 'updated'};
   });
 
-  // Обработка загрузки файлов
   app.post('/upload', (req, res) async {
     print('Received upload request');
     try {
@@ -171,12 +170,12 @@ void main() async {
         final fileUpload = body['file'] as HttpBodyFileUpload;
         print('Got file upload: ${fileUpload.filename}, content type: ${fileUpload.contentType}');
         
-        // Проверяем тип контента
+      
         if (fileUpload.contentType == null || !fileUpload.contentType!.mimeType.startsWith('image/')) {
           throw 'Invalid content type: ${fileUpload.contentType?.mimeType}';
         }
         
-        // Нормализуем имя файла
+        
         final fileName = '${DateTime.now().millisecondsSinceEpoch}${path.extension(fileUpload.filename)}';
         final filePath = path.normalize(path.join('uploads', fileName));
         print('Saving file to: $filePath');
@@ -208,7 +207,7 @@ void main() async {
     }
   });
 
-  // Статика для загруженных файлов
+
   app.get('/uploads/*', (req, res) async {
     try {
       final filePath = path.normalize(req.uri.path.substring(1));
@@ -245,7 +244,7 @@ void main() async {
     }
   });
 
-  // Запуск сервера
+
   await app.listen(3001);
   print('Server running on port 3001');
 }  
