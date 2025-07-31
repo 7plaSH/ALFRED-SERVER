@@ -148,7 +148,11 @@ void main() async {
       [data['isCompleted'] ? 1 : 0, data['comment'], id],
     );
 
-    // Если маркер отмечен как выполненный (is_completed == true), запускаем отложенное удаление
+
+
+
+
+    
     if (data['isCompleted'] == true) {
       Future.delayed(const Duration(minutes: 3), () {
         print('Удаляем маркер с id: $id через 3 минуты после ответа');
