@@ -155,7 +155,7 @@ void main() async {
     
     if (data['isCompleted'] == true) {
       Future.delayed(const Duration(minutes: 3), () {
-        print('Удаляем маркер с id: $id через 3 минуты после ответа');
+        
         db.execute('DELETE FROM markers WHERE id = ?', [id]);
       });
     }
